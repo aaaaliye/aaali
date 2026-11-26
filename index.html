@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>电视直播播放器（IP 直连 / 列表源）</title>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#1a1d24; --panel2:#22262f; --line:#2e333d;
+    --txt:#e8eaee; --sub:#9aa1ad; --accent:#3b82f6; --star:#f59e0b;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);font-family:-apple-system,"PingFang HK","Microsoft YaHei",sans-serif;height:100vh;display:flex;flex-direction:column}
+  header{display:flex;gap:10px;align-items:center;padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+  header h1{font-size:16px;margin-right:8px;white-space:nowrap}
+  input[type=text]{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:8px 10px;font-size:13px}
+  button{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer}
+  button.ghost{background:var(--panel2);border:1px solid var(--line)}
+  .direct-bar{display:flex;gap:8px;padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap;align-items:center}
+  .direct-bar .lab{font-size:13px;color:var(--sub);white-space:nowrap}
+  .direct-bar input{flex:1;min-width:220px}
+  .history{display:flex;gap:6px;flex-wrap:wrap;padding:6px 14px;background:var(--panel);border-bottom:1px solid var(--line)}
+  .history .chip{font-size:12px;color:var(--sub);border:1px solid var(--line);border-radius:999px;padding:4px 10px;cursor:pointer;max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .history .chip:hover{color:var(--txt);border-color:var(--accent)}
+  .body{flex:1;display:flex;overflow:hidden}
+  .sidebar{width:340px;min-width:260px;display:flex;flex-direction:column;border-right:1px solid var(--line);background:var(--panel)}
+  .toolbar{padding:10px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid var(--line)}
+  .toolbar input,.toolbar select{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:8px 10px;font-size:13px}
+  .ch-list{flex:1;overflow-y:auto;padding:6px}
+  .ch{display:flex;gap:10px;align-items:center;padding:9px 10px;border-radius:10px;cursor:pointer}
+  .ch:hover{background:var(--panel2)}
+  .ch.active{background:#243043}
+  .ch img{width:34px;height:34px;border-radius:6px;object-fit:contain;background:#fff}
+  .ch .meta{flex:1;min-width:0}
+  .ch .name{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ch .grp{font-size:11px;color:var(--sub)}
+  .star{cursor:pointer;font-size:16px;color:#444}
+  .star.on{color:var(--star)}
+  .main{flex:1;display:flex;flex-direction:column}
+  .player{flex:1;display:flex;align-items:center;justify-content:center;background:#000;position:relative}
+  video{width:100%;height:100%;max-height:100%}
+  .now{padding:12px 16px;border-top:1px solid var(--line);background:var(--panel)}
+  .now .t{font-size:15px;font-weight:600}
+  .now .s{font-size:12px;color:var(--sub);margin-top:3px}
+  .status{padding:8px 16px;font-size:12px;color:var(--sub);border-top:1px solid var(--line);background:var(--panel)}
+  .status.err{color:#f87171}
+  .count{font-size:12px;color:var(--sub);padding:4px 10px}
+  @media(max-width:760px){
+    .body{flex-direction:column}
+    .sidebar{width:100%;height:42%;border-right:0;border-top:1px solid var(--line)}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>📺 电视直播播放器</h1>
+  <input id="srcUrl" type="text" placeholder="M3U / M3U8 列表源地址（GitHub 链接等）" style="flex:1;min-width:180px" />
+  <button onclick="loadSource()">加载列表</button>
+  <button class="ghost" onclick="loadDefault()">默认香港源</button>
+</header>
+
+<div class="direct-bar">
+  <span class="lab">IP / 流地址直连：</span>
+  <input id="directUrl" type="text" placeholder="例：http://192.168.1.10:8080/live/index.m3u8 （支持 m3u8 / mp4 / webm）" />
+  <button onclick="playDirect()">▶ 播放</button>
+</div>
+<div class="history" id="history"></div>
+
+<div class="body">
+  <aside class="sidebar">
+    <div class="toolbar">
+      <input id="search" type="text" placeholder="🔍 搜索频道" oninput="renderList()" />
+      <select id="groupFilter" onchange="renderList()"><option value="">全部分组</option></select>
+    </div>
+    <div class="count" id="count"></div>
+    <div class="ch-list" id="chList"></div>
+  </aside>
+  <main class="main">
+    <div class="player">
+      <video id="video" controls autoplay playsinline></video>
+    </div>
+    <div class="now">
+      <div class="t" id="nowTitle">未播放</div>
+      <div class="s" id="nowSub"></div>
+    </div>
+    <div class="status" id="status"></div>
+  </main>
+</div>
+
+<script>
+const DEFAULT_SRC = "https://iptv-org.github.io/iptv/countries/hk.m3u";
+const PROXY_PREFIX = ""; // http 流被拦截时可填 CORS 代理前缀
+
+let channels = [];
+let activeIndex = -1;
+let hls = null;
+let favorites = new Set(JSON.parse(localStorage.getItem("hk_fav")||"[]"));
+let directs = JSON.parse(localStorage.getItem("hk_directs")||"[]");
+
+const $ = id => document.getElementById(id);
+const saveFav = () => localStorage.setItem("hk_fav", JSON.stringify([...favorites]));
+const saveDirects = () => localStorage.setItem("hk_directs", JSON.stringify(directs));
+
+/* ---------- 列表源解析 ---------- */
+function parseM3U(text){
+  const lines = text.split(/\r?\n/);
+  const out = []; let meta = null;
+  for(let line of lines){
+    line = line.trim();
+    if(!line) continue;
+    if(line.startsWith("#EXTINF")){
+      const nameMatch = line.match(/,(.*)$/);
+      const logo = (line.match(/tvg-logo="([^"]*)"/)||[])[1] || "";
+      const grp  = (line.match(/group-title="([^"]*)"/)||[])[1] || "其他";
+      const id   = (line.match(/tvg-id="([^"]*)"/)||[])[1] || "";
+      meta = { name: nameMatch?nameMatch[1].trim():"未命名", logo, grp, id };
+    } else if(!line.startsWith("#")){
+      if(meta){ out.push({ ...meta, url: line }); meta = null; }
+    }
+  }
+  return out;
+}
+
+function proxied(url){
+  if(PROXY_PREFIX && /^http:\/\//.test(url)) return PROXY_PREFIX + encodeURIComponent(url);
+  return url;
+}
+
+async function loadSource(){
+  const url = $("srcUrl").value.trim();
+  if(!url){ setStatus("请填写列表源地址", true); return; }
+  await fetchList(url);
+}
+async function loadDefault(){
+  $("srcUrl").value = DEFAULT_SRC;
+  await fetchList(DEFAULT_SRC);
+}
+async function fetchList(url){
+  setStatus("正在加载源…");
+  try{
+    const res = await fetch(url);
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    channels = parseM3U(await res.text());
+    activeIndex = -1;
+    buildGroups(); renderList();
+    setStatus(`已加载 ${channels.length} 个频道`);
+    if(channels.length) play(0);
+  }catch(e){
+    setStatus("加载失败："+e.message+"（可能是跨域/混合内容拦截）", true);
+  }
+}
+
+function buildGroups(){
+  const groups = [...new Set(channels.map(c=>c.grp))].sort();
+  $("groupFilter").innerHTML = '<option value="">全部分组</option>' + groups.map(g=>`<option>${g}</option>`).join("");
+}
+
+function renderList(){
+  const kw = $("search").value.trim().toLowerCase();
+  const grp = $("groupFilter").value;
+  const list = channels.filter(c =>
+    (!grp || c.grp===grp) &&
+    (!kw || c.name.toLowerCase().includes(kw) || c.id.toLowerCase().includes(kw))
+  );
+  $("count").textContent = `共 ${list.length} 个频道`;
+  $("chList").innerHTML = list.map(c=>{
+    const realIdx = channels.indexOf(c);
+    const fav = favorites.has(c.url) ? "on" : "";
+    return `<div class="ch ${realIdx===activeIndex?'active':''}" onclick="play(${realIdx})">
+      <img src="${c.logo||''}" onerror="this.style.visibility='hidden'"/>
+      <div class="meta">
+        <div class="name">${escapeHtml(c.name)}</div>
+        <div class="grp">${escapeHtml(c.grp)}</div>
+      </div>
+      <span class="star ${fav}" onclick="event.stopPropagation();toggleFav('${c.url}')">★</span>
+    </div>`;
+  }).join("");
+}
+
+function toggleFav(url){
+  favorites.has(url) ? favorites.delete(url) : favorites.add(url);
+  saveFav(); renderList();
+}
+
+/* ---------- 播放核心 ---------- */
+function attachPlayer(src, title, sub){
+  const video = $("video");
+  if(hls){ hls.destroy(); hls = null; }
+  video.pause(); video.removeAttribute("src"); video.load();
+
+  const isHls = /\.m3u8(\?|#|$)/i.test(src);
+  const isNative = /\.(mp4|webm|ogg|mov)(\?|#|$)/i.test(src);
+
+  if(isHls && Hls.isSupported()){
+    hls = new Hls({ liveSyncDurationCount:3 });
+    hls.loadSource(src);
+    hls.attachMedia(video);
+    hls.on(Hls.Events.MANIFEST_PARSED, ()=>video.play().catch(()=>{}));
+    hls.on(Hls.Events.ERROR, (_,data)=>{
+      if(data.fatal) setStatus("播放失败："+(data.details||"流不可用")+"（频道可能地域限制、已失效或跨域被拦截）", true);
+    });
+  } else if(isHls && video.canPlayType("application/vnd.apple.mpegurl")){
+    video.src = src;
+    video.addEventListener("loadedmetadata", ()=>video.play().catch(()=>{}), { once:true });
+  } else if(isNative){
+    video.src = src;
+    video.addEventListener("loadedmetadata", ()=>video.play().catch(()=>{}), { once:true });
+  } else {
+    setStatus("不支持该格式：浏览器仅能直接播放 m3u8 / mp4 / webm，rtmp、udp 等需转封装", true);
+    return;
+  }
+  $("nowTitle").textContent = title;
+  $("nowSub").textContent = sub || "";
+  setStatus("缓冲中…");
+}
+
+function play(idx){
+  const c = channels[idx];
+  if(!c) return;
+  activeIndex = idx; renderList();
+  attachPlayer(proxied(c.url), c.name, c.grp);
+}
+
+/* ---------- IP / 流地址直连 ---------- */
+function normalizeUrl(raw){
+  let u = raw.trim();
+  if(!u) return "";
+  if(!/^(https?:|rtmp:|udp:|rtsp:|ftp:)/i.test(u)) u = "http://" + u; // 纯 IP/域名自动补 http
+  return u;
+}
+
+function playDirect(){
+  const raw = $("directUrl").value;
+  let u = normalizeUrl(raw);
+  if(!u){ setStatus("请填写 IP 或流地址", true); return; }
+
+  if(/^(rtmp|udp|rtsp):/i.test(u)){
+    setStatus("浏览器不支持 rtmp / udp / rtsp 直接播放，请用支持该协议的播放器或转成 m3u8", true);
+    return;
+  }
+  if(!/\.(m3u8|mp4|webm|ogg|mov)(\?|#|$)/i.test(u)){
+    setStatus("地址缺少可识别的流媒体路径（.m3u8 / .mp4 等）。仅填 IP 还需带上端口和完整路径", true);
+    return;
+  }
+
+  // 记入最近记录
+  directs = [u, ...directs.filter(d=>d!==u)].slice(0, 8);
+  saveDirects(); renderHistory();
+
+  activeIndex = -1; renderList();
+  attachPlayer(proxied(u), "直连：" + u, "手动输入地址");
+}
+
+function renderHistory(){
+  const box = $("history");
+  if(!directs.length){ box.innerHTML = ""; return; }
+  box.innerHTML = '<span class="lab" style="font-size:12px;color:var(--sub);align-self:center">最近：</span>' +
+    directs.map(d=>`<span class="chip" title="${escapeHtml(d)}" onclick="fillDirect('${escapeHtml(d)}')">${escapeHtml(d)}</span>`).join("");
+}
+function fillDirect(u){
+  $("directUrl").value = u;
+  playDirect();
+}
+
+function setStatus(msg, err=false){
+  const el = $("status");
+  el.textContent = msg;
+  el.className = "status" + (err?" err":"");
+}
+
+function escapeHtml(s){
+  return (s||"").replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
+}
+
+renderHistory();
+loadDefault();
+</script>
+</body>
+</html>
